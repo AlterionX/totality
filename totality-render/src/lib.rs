@@ -3,156 +3,69 @@ mod shaders;
 
 use std::{sync::Arc, collections::{HashMap, hash_map::Entry}, time::{Instant, Duration}};
 
-use img::{ImageDecoder, codecs::png::{PngDecoder, PngReader}, ImageFormat};
+use img::ImageFormat;
 use raw_window_handle::HandleError;
 use tap::{TapFallible, TapOptional};
 use task::RenderTask;
 use thiserror::Error;
 
 use vulkano::{
-    VulkanLibrary,
-    VulkanError,
-    instance::{
+    buffer::{
+        AllocateBufferError, Buffer, BufferCreateInfo, BufferUsage, IndexBuffer, Subbuffer
+    }, command_buffer::{
+        allocator::{
+            CommandBufferAllocator, StandardCommandBufferAllocator, StandardCommandBufferAllocatorCreateInfo
+        }, ClearAttachment, ClearRect, CommandBufferBeginInfo, CommandBufferLevel, CommandBufferUsage, CopyBufferToImageInfo, RecordingCommandBuffer, RenderPassBeginInfo, SubpassBeginInfo, SubpassContents, SubpassEndInfo
+    }, descriptor_set::{
+        allocator::{
+            DescriptorSetAllocator, StandardDescriptorSetAllocator, StandardDescriptorSetAllocatorCreateInfo
+        }, layout::{
+            DescriptorSetLayout, DescriptorSetLayoutBinding, DescriptorSetLayoutCreateFlags, DescriptorSetLayoutCreateInfo, DescriptorType
+        }, pool::{
+            DescriptorPool, DescriptorPoolCreateFlags, DescriptorPoolCreateInfo
+        }, DescriptorSet, WriteDescriptorSet
+    }, device::{
+        physical::{
+            PhysicalDevice, PhysicalDeviceType
+        }, Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo, QueueFlags
+    }, format::{
+        ClearValue, Format
+    }, image::{
+        sampler::{Sampler, SamplerCreateInfo}, view::ImageView, Image, ImageCreateInfo, ImageLayout, ImageTiling, ImageType, ImageUsage, SampleCount
+    }, instance::{
         Instance,
         InstanceCreateInfo,
-    },
-    LoadingError,
-    Version,
-    swapchain::{
-        Surface,
-        Swapchain,
-        SwapchainCreateInfo,
-        CompositeAlpha,
-        self,
-        SwapchainPresentInfo,
-    },
-    Validated,
-    device::{
-        physical::{
-            PhysicalDeviceType,
-            PhysicalDevice
-        },
-        Device,
-        QueueFlags,
-        DeviceCreateInfo,
-        QueueCreateInfo,
-        Queue,
-        DeviceExtensions, Features,
-    },
-    memory::allocator::{
-        StandardMemoryAllocator,
-        AllocationCreateInfo,
-        MemoryTypeFilter,
-    },
-    buffer::{
-        Buffer,
-        BufferCreateInfo,
-        BufferUsage,
-        Subbuffer,
-        AllocateBufferError,
-        IndexBuffer,
-    },
-    command_buffer::{
-        allocator::{
-            StandardCommandBufferAllocator,
-            StandardCommandBufferAllocatorCreateInfo, CommandBufferAlloc,
-        },
-        AutoCommandBufferBuilder,
-        CommandBufferUsage,
-        RenderPassBeginInfo,
-        SubpassBeginInfo,
-        SubpassContents,
-        SubpassEndInfo,
-        ClearAttachment,
-        ClearRect, CopyBufferToImageInfo, sys::{UnsafeCommandBuffer, UnsafeCommandBufferBuilder, CommandBufferBeginInfo}, CommandBufferLevel, CommandBufferInheritanceInfo, SecondaryCommandBufferAbstract,
-    },
-    image::{
-        ImageUsage,
-        Image,
-        view::{ImageView, ImageViewCreateInfo},
-        SampleCount,
-        ImageCreateInfo,
-        ImageType, ImageCreateFlags, ImageLayout, ImageTiling, ImageSubresourceRange, sampler::{Sampler, SamplerCreateInfo},
-    },
-    format::{
-        Format,
-        ClearValue,
-    },
-    render_pass::{
-        RenderPass,
-        Framebuffer,
-        Subpass,
-    },
-    shader::{
-        ShaderModule,
-        ShaderStages,
-    },
-    sync::{
-        HostAccessError,
-        GpuFuture, ImageMemoryBarrier, DependencyInfo, DependencyFlags,
-    },
-    pipeline::{
-        GraphicsPipeline,
+    }, memory::allocator::{
+        AllocationCreateInfo, MemoryTypeFilter, StandardMemoryAllocator
+    }, pipeline::{
         graphics::{
-            GraphicsPipelineCreateInfo,
-            rasterization::{
-                RasterizationState,
-                CullMode,
-            },
-            input_assembly::{
+            color_blend::{
+                ColorBlendAttachmentState, ColorBlendState
+            }, depth_stencil::{
+                DepthState, DepthStencilState
+            }, input_assembly::{
                 InputAssemblyState,
                 PrimitiveTopology,
-            },
-            vertex_input::{
-                VertexInputState,
-                VertexInputBindingDescription,
-                VertexInputRate,
-                VertexInputAttributeDescription,
-            },
-            viewport::{
-                ViewportState,
-                Viewport,
-                Scissor,
-            },
-            multisample::MultisampleState,
-            subpass::PipelineSubpassType,
-            color_blend::{
-                ColorBlendState,
-                ColorBlendAttachmentState,
-            },
-            depth_stencil::{
-                DepthStencilState,
-                DepthState,
-            },
-        },
-        PipelineLayout,
-        layout::{
-            PipelineLayoutCreateInfo,
-            PipelineLayoutCreateFlags,
-            PushConstantRange,
-        },
-        PipelineShaderStageCreateInfo, PipelineBindPoint, Pipeline,
-    },
-    descriptor_set::{
-        pool::{
-            DescriptorPool,
-            DescriptorPoolCreateInfo,
-            DescriptorPoolCreateFlags,
-        },
-        layout::{
-            DescriptorType,
-            DescriptorSetLayout,
-            DescriptorSetLayoutCreateInfo,
-            DescriptorSetLayoutCreateFlags,
-            DescriptorSetLayoutBinding,
-        },
-        allocator::{
-            StandardDescriptorSetAllocator,
-            StandardDescriptorSetAllocatorCreateInfo, DescriptorSetAllocator, StandardDescriptorSetAlloc,
-        },
-        PersistentDescriptorSet,
-        WriteDescriptorSet, DescriptorSet, DescriptorSetWithOffsets,
-    },
+            }, multisample::MultisampleState, rasterization::{
+                CullMode, RasterizationState
+            }, subpass::PipelineSubpassType, vertex_input::{
+                VertexInputAttributeDescription, VertexInputBindingDescription, VertexInputRate, VertexInputState
+            }, viewport::{
+                Scissor, Viewport, ViewportState
+            }, GraphicsPipelineCreateInfo
+        }, layout::{
+            PipelineLayoutCreateFlags, PipelineLayoutCreateInfo, PushConstantRange
+        }, GraphicsPipeline, Pipeline, PipelineBindPoint, PipelineLayout, PipelineShaderStageCreateInfo
+    }, render_pass::{
+        Framebuffer, RenderPass, Subpass
+    }, shader::{
+        ShaderModule,
+        ShaderStages,
+    }, swapchain::{
+        self, CompositeAlpha, Surface, Swapchain, SwapchainCreateInfo, SwapchainPresentInfo
+    }, sync::{
+        GpuFuture, HostAccessError
+    }, LoadingError, Validated, Version, VulkanError, VulkanLibrary
 };
 use winit::{window::{WindowId, Window}, dpi::PhysicalSize};
 
@@ -216,7 +129,7 @@ impl RendererPreferences {
 
 pub struct LoadedModelHandles {
     texture_image: Option<Arc<Image>>,
-    texture_descriptor_set: Option<Arc<PersistentDescriptorSet>>,
+    texture_descriptor_set: Option<Arc<DescriptorSet>>,
     vertex_offset: i32,
     index_offset: u32,
 }
@@ -270,16 +183,16 @@ pub struct Renderer {
     constants_buffer: Subbuffer<[u8]>,
     staging_texture_buffer: Subbuffer<[u8]>,
 
-    command_buffer_alloc: Arc<StandardCommandBufferAllocator>,
+    command_buffer_alloc: Arc<dyn CommandBufferAllocator>,
 
     pipeline_layout: Arc<PipelineLayout>,
 
     descriptor_set_layout: Arc<DescriptorSetLayout>,
     texture_descriptor_set_layout: Arc<DescriptorSetLayout>,
     descriptor_pool: DescriptorPool,
-    descriptor_set_allocator: StandardDescriptorSetAllocator,
-    descriptor_set: Arc<PersistentDescriptorSet>,
-    empty_texture_descriptor_set: Arc<PersistentDescriptorSet>,
+    descriptor_set_allocator: Arc<dyn DescriptorSetAllocator>,
+    descriptor_set: Arc<DescriptorSet>,
+    empty_texture_descriptor_set: Arc<DescriptorSet>,
     texture_sampler: Arc<Sampler>,
 
     // TODO: better map for window ids?
@@ -356,9 +269,9 @@ impl Renderer {
             let (device, queues_iter) = Device::new(
                 Arc::clone(&ordered_physical_devices[0]),
                 DeviceCreateInfo {
-                    enabled_features: Features {
+                    enabled_features: DeviceFeatures {
                         geometry_shader: true,
-                        ..Features::empty()
+                        ..DeviceFeatures::empty()
                     },
                     queue_create_infos: vec![QueueCreateInfo {
                         queue_family_index: selected_queue_family_idx,
@@ -649,17 +562,17 @@ impl Renderer {
             flags: DescriptorPoolCreateFlags::empty(),
             ..Default::default()
         }).unwrap();
-        let descriptor_set_allocator = StandardDescriptorSetAllocator::new(
+        let descriptor_set_allocator: Arc<dyn DescriptorSetAllocator> = Arc::new(StandardDescriptorSetAllocator::new(
             Arc::clone(&selected_device),
             StandardDescriptorSetAllocatorCreateInfo {
                 set_count: descriptor_set_layout.bindings().len() + texture_descriptor_set_layout.bindings().len() * 10,
                 update_after_bind: false,
                 ..Default::default()
             }
-        );
+        ));
 
-        let descriptor_set = PersistentDescriptorSet::new(
-            &descriptor_set_allocator,
+        let descriptor_set = DescriptorSet::new(
+            Arc::clone(&descriptor_set_allocator),
             Arc::clone(&descriptor_set_layout),
             [
                 WriteDescriptorSet::buffer(
@@ -710,8 +623,8 @@ impl Renderer {
             },
         ).unwrap();
         let empty_texture_image_view = ImageView::new_default(empty_texture_image).unwrap();
-        let empty_texture_descriptor_set = PersistentDescriptorSet::new(
-            &descriptor_set_allocator,
+        let empty_texture_descriptor_set = DescriptorSet::new(
+            Arc::clone(&descriptor_set_allocator),
             Arc::clone(&texture_descriptor_set_layout),
             [
                 WriteDescriptorSet::image_view(0, empty_texture_image_view),
@@ -910,21 +823,30 @@ impl Renderer {
                     let texture_image_view = ImageView::new_default(Arc::clone(&texture_image)).unwrap();
 
                     // TODO Batch these somehow.
-                    let mut image_copy_builder = AutoCommandBufferBuilder::primary(&self.command_buffer_alloc, self.selected_device_queues[0].queue_family_index(), CommandBufferUsage::OneTimeSubmit).unwrap();
+                    let mut image_copy_builder = RecordingCommandBuffer::new(
+                        Arc::clone(&self.command_buffer_alloc),
+                        self.selected_device_queues[0].queue_family_index(),
+                        CommandBufferLevel::Primary,
+                        CommandBufferBeginInfo {
+                            usage: CommandBufferUsage::OneTimeSubmit,
+                            inheritance_info: None,
+                            ..Default::default()
+                        },
+                    ).unwrap();
                     image_copy_builder
                         .copy_buffer_to_image(CopyBufferToImageInfo {
                             ..CopyBufferToImageInfo::buffer_image(self.staging_texture_buffer.clone(), Arc::clone(&texture_image))
                         })
                         .unwrap();
-                    let image_copy_buffer = image_copy_builder.build().unwrap();
+                    let image_copy_buffer = image_copy_builder.end().unwrap();
                     vulkano::sync::now(Arc::clone(&self.selected_device))
                         .then_execute(Arc::clone(&self.selected_device_queues[0]), image_copy_buffer)
                         .unwrap()
                         .flush()
                         .unwrap();
 
-                    let texture_descriptor_set = PersistentDescriptorSet::new(
-                        &self.descriptor_set_allocator,
+                    let texture_descriptor_set = DescriptorSet::new(
+                        Arc::clone(&self.descriptor_set_allocator),
                         Arc::clone(&self.texture_descriptor_set_layout),
                         [
                             WriteDescriptorSet::image_view(0, texture_image_view),
@@ -1008,7 +930,8 @@ impl Renderer {
                             0,
                             VertexInputBindingDescription {
                                 stride: 12 + 12 + 8,
-                                input_rate: VertexInputRate::Vertex
+                                input_rate: VertexInputRate::Vertex,
+                                ..Default::default()
                             },
                         )
                         .attribute(
@@ -1017,13 +940,15 @@ impl Renderer {
                                 binding: 0,
                                 format: Format::R32G32B32_SFLOAT,
                                 offset: 0,
+                                ..Default::default()
                             },
                         )
                         .binding(
                             1,
                             VertexInputBindingDescription {
                                 stride: 12 + 12 + 8,
-                                input_rate: VertexInputRate::Vertex
+                                input_rate: VertexInputRate::Vertex,
+                                ..Default::default()
                             },
                         )
                         .attribute(
@@ -1032,6 +957,7 @@ impl Renderer {
                                 binding: 0,
                                 format: Format::R32G32B32_SFLOAT,
                                 offset: 12,
+                                ..Default::default()
                             },
                         )
                         .binding(
@@ -1039,6 +965,7 @@ impl Renderer {
                             VertexInputBindingDescription {
                                 stride: 12 + 12 + 8,
                                 input_rate: VertexInputRate::Vertex,
+                                ..Default::default()
                             },
                         )
                         .attribute(
@@ -1047,6 +974,7 @@ impl Renderer {
                                 binding: 0,
                                 format: Format::R32G32_SFLOAT,
                                 offset: 12 + 12,
+                                ..Default::default()
                             },
                         )
                 ),
@@ -1083,10 +1011,15 @@ impl Renderer {
         perf.record_command_record_start();
 
         let base_queue = &self.selected_device_queues[0];
-        let mut builder = AutoCommandBufferBuilder::primary(
-            &self.command_buffer_alloc,
+        let mut builder = RecordingCommandBuffer::new(
+            Arc::clone(&self.command_buffer_alloc),
             self.selected_device_queues[0].queue_family_index(),
-            CommandBufferUsage::OneTimeSubmit,
+            CommandBufferLevel::Primary,
+            CommandBufferBeginInfo {
+                usage: CommandBufferUsage::OneTimeSubmit,
+                inheritance_info: None,
+                ..Default::default()
+            }
         )
             .tap_err(|e| log::error!("TOTALITY-RENDERER-RENDER-TO-FAILED source=clear_pipeline error=command_buffer_alloc {e}"))?;
         builder
@@ -1165,22 +1098,23 @@ impl Renderer {
                     Arc::clone(&texture_descriptor_set),
                 )
                 .unwrap();
-            builder
-                .draw_indexed(
-                    index_count,
-                    instance_count,
-                    handle.index_offset,
-                    handle.vertex_offset,
-                    current_instance_buffer_idx,
-                )
-                .unwrap();
+            unsafe {
+                builder
+                    .draw_indexed(
+                        index_count,
+                        instance_count,
+                        handle.index_offset,
+                        handle.vertex_offset,
+                        current_instance_buffer_idx,
+                    )
+            }.unwrap();
             current_instance_buffer_idx += instance_count;
             log::info!("RENDER-PASS-DRAW-COMPLETE");
         }
         builder
             .end_render_pass(SubpassEndInfo { ..Default::default() })
             .unwrap();
-        let clear_buffer = builder.build().unwrap();
+        let clear_buffer = builder.end().unwrap();
 
         perf.record_command_record_end();
 
