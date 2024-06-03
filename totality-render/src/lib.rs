@@ -206,6 +206,8 @@ pub struct Renderer {
     index_free_byte_start: u64,
     vertex_free_start: i32,
     index_free_start: u32,
+
+    pipeline_cache: Option<([u32; 3], u32, WindowId, Arc<GraphicsPipeline>)>,
 }
 
 impl Renderer {
@@ -721,6 +723,8 @@ impl Renderer {
             index_free_start: 0,
             vertex_free_byte_start: 0,
             vertex_free_start: 0,
+
+            pipeline_cache: None,
         })
     }
 
@@ -745,6 +749,10 @@ impl Renderer {
             start: Instant,
             inflight_load: Option<Instant>,
             loads: Vec<Duration>,
+            framebuffer_acquisition_start: Option<Instant>,
+            framebuffer_acquisition_duration: Option<Duration>,
+            pipeline_construction_start: Option<Instant>,
+            pipeline_construction_duration: Option<Duration>,
             inflight_command_record: Option<Instant>,
             command_record_duration: Option<Duration>,
             inflight_draw: Option<Instant>,
@@ -757,6 +765,10 @@ impl Renderer {
                     start: Instant::now(),
                     inflight_load: None,
                     loads: Vec::with_capacity(20),
+                    framebuffer_acquisition_start: None,
+                    framebuffer_acquisition_duration: None,
+                    pipeline_construction_start: None,
+                    pipeline_construction_duration: None,
                     inflight_command_record: None,
                     command_record_duration: None,
                     inflight_draw: None,
@@ -797,10 +809,32 @@ impl Renderer {
                 self.draw_duration = Some(Instant::now() - start);
             }
 
+            fn record_framebuffer_acquisition_start(&mut self) {
+                self.framebuffer_acquisition_start = Some(Instant::now());
+            }
+
+            fn record_framebuffer_acquisition_end(&mut self) {
+                let Some(start) = self.framebuffer_acquisition_start else {
+                    return;
+                };
+                self.framebuffer_acquisition_duration = Some(Instant::now() - start);
+            }
+
+            fn record_pipeline_construction_start(&mut self) {
+                self.pipeline_construction_start = Some(Instant::now());
+            }
+
+            fn record_pipeline_construction_end(&mut self) {
+                let Some(start) = self.pipeline_construction_start else {
+                    return;
+                };
+                self.pipeline_construction_duration = Some(Instant::now() - start);
+            }
+
             fn record_end(self) {
                 let over = Instant::now() - self.start;
                 let a = 1000. / over.as_millis() as f64;
-                log::info!("RENDER-PASS-TIMING fps={a} loads={:?} submit={:?} draw={:?} total={:?}", self.loads, self.command_record_duration, self.draw_duration, over);
+                log::info!("RENDER-PASS-TIMING fps={a} loads={:?} framebuffer_acq={:?} pipeline_submission={:?} submit={:?} draw={:?} total={:?}", self.loads, self.framebuffer_acquisition_duration, self.pipeline_construction_duration, self.command_record_duration, self.draw_duration, over);
             }
         }
 
@@ -938,6 +972,7 @@ impl Renderer {
             perf.record_load_end();
         }
 
+        perf.record_framebuffer_acquisition_start();
         let (active_framebuffer, afidx, framebuffer_future) = {
             let (mut preferred, mut suboptimal, mut acquire_next_image) = swapchain::acquire_next_image(Arc::clone(&window_swapchain.swapchain), None).unwrap();
             const MAX_RECREATION_OCCURRENCES: usize = 3;
@@ -952,108 +987,137 @@ impl Renderer {
             }
             (&window_swapchain.images[preferred as usize], preferred, acquire_next_image)
         };
+        perf.record_framebuffer_acquisition_end();
 
+        perf.record_pipeline_construction_start();
         let subpass = Subpass::from(Arc::clone(&window_swapchain.render_pass), 0).unwrap();
-        let pipeline = GraphicsPipeline::new(
-            Arc::clone(&self.selected_device),
-            None,
-            GraphicsPipelineCreateInfo {
-                stages: [
-                    PipelineShaderStageCreateInfo::new(self.vertex_shader.entry_point("main").unwrap()),
-                    PipelineShaderStageCreateInfo::new(self.fragment_shader.entry_point("main").unwrap()),
-                    PipelineShaderStageCreateInfo::new(self.geometry_shader.entry_point("main").unwrap()),
-                ].into_iter().collect(),
-                rasterization_state: Some(RasterizationState {
-                    cull_mode: CullMode::Back,
-                    ..RasterizationState::default()
-                }),
-                input_assembly_state: Some(InputAssemblyState {
-                    topology: PrimitiveTopology::TriangleList,
-                    ..Default::default()
-                }),
-                vertex_input_state: Some(
-                    VertexInputState::new()
-                        .binding(
-                            0,
-                            VertexInputBindingDescription {
-                                stride: 12 + 12 + 8,
-                                input_rate: VertexInputRate::Vertex,
-                                ..Default::default()
-                            },
-                        )
-                        .attribute(
-                            0,
-                            VertexInputAttributeDescription {
-                                binding: 0,
-                                format: Format::R32G32B32_SFLOAT,
-                                offset: 0,
-                                ..Default::default()
-                            },
-                        )
-                        .binding(
-                            1,
-                            VertexInputBindingDescription {
-                                stride: 12 + 12 + 8,
-                                input_rate: VertexInputRate::Vertex,
-                                ..Default::default()
-                            },
-                        )
-                        .attribute(
-                            1,
-                            VertexInputAttributeDescription {
-                                binding: 0,
-                                format: Format::R32G32B32_SFLOAT,
-                                offset: 12,
-                                ..Default::default()
-                            },
-                        )
-                        .binding(
-                            2,
-                            VertexInputBindingDescription {
-                                stride: 12 + 12 + 8,
-                                input_rate: VertexInputRate::Vertex,
-                                ..Default::default()
-                            },
-                        )
-                        .attribute(
-                            2,
-                            VertexInputAttributeDescription {
-                                binding: 0,
-                                format: Format::R32G32_SFLOAT,
-                                offset: 12 + 12,
-                                ..Default::default()
-                            },
-                        )
-                ),
-                viewport_state: Some(ViewportState {
-                    viewports: [Viewport {
-                        offset: [0.0; 2],
-                        extent: [active_framebuffer.image.extent()[0] as f32, active_framebuffer.image.extent()[1] as f32],
-                        depth_range: 0.0..=1.0
-                    }].into_iter().collect(),
-                    scissors: [Scissor {
-                        offset: [0; 2],
-                        extent: [active_framebuffer.image.extent()[0], active_framebuffer.image.extent()[1]],
-                    }].into_iter().collect(),
-                    ..ViewportState::default()
-                }),
-                multisample_state: Some(MultisampleState {
-                    rasterization_samples: SampleCount::Sample1,
-                    ..Default::default()
-                }),
-                color_blend_state: Some(ColorBlendState::with_attachment_states(
-                    subpass.num_color_attachments(),
-                    ColorBlendAttachmentState::default(),
-                )),
-                depth_stencil_state: Some(DepthStencilState {
-                    depth: Some(DepthState::simple()),
-                    ..Default::default()
-                }),
-                subpass: Some(PipelineSubpassType::BeginRenderPass(subpass)),
-                ..GraphicsPipelineCreateInfo::layout(Arc::clone(&self.pipeline_layout))
+        let active_extent = active_framebuffer.image.extent();
+        let color_attachment_count = subpass.num_color_attachments();
+        let pipeline = if let Some(pipeline) = 'pipeline_cache_check: {
+            let Some((cached_extent, cached_color_attachment_count, cached_window_id, cached_pipeline)) = self.pipeline_cache.as_ref() else {
+                log::info!("RENDER-PASS-PIPELINE-CACHE cache_miss reason=no_cache");
+                break 'pipeline_cache_check None;
+            };
+            if *cached_extent != active_extent {
+                log::info!("RENDER-PASS-PIPELINE-CACHE cache_miss reason=extent old={:?} new={:?}", cached_extent, active_extent);
+                break 'pipeline_cache_check None;
             }
-        ).unwrap();
-        log::info!("RENDER-PASS-PIPELINE descriptor_set={}", pipeline.num_used_descriptor_sets());
+            if *cached_color_attachment_count != color_attachment_count {
+                log::info!("RENDER-PASS-PIPELINE-CACHE cache_miss reason=attachment_count old={:?} new={:?}", cached_color_attachment_count, color_attachment_count);
+                break 'pipeline_cache_check None;
+            }
+            if *cached_window_id != window.id() {
+                log::info!("RENDER-PASS-PIPELINE-CACHE cache_miss reason=window_id old={:?} new={:?}", cached_window_id, window.id());
+                break 'pipeline_cache_check None;
+            }
+            Some(cached_pipeline)
+        } {
+            pipeline.clone()
+        } else {
+            let pipeline = GraphicsPipeline::new(
+                Arc::clone(&self.selected_device),
+                None,
+                GraphicsPipelineCreateInfo {
+                    stages: [
+                        PipelineShaderStageCreateInfo::new(self.vertex_shader.entry_point("main").unwrap()),
+                        PipelineShaderStageCreateInfo::new(self.fragment_shader.entry_point("main").unwrap()),
+                        PipelineShaderStageCreateInfo::new(self.geometry_shader.entry_point("main").unwrap()),
+                    ].into_iter().collect(),
+                    rasterization_state: Some(RasterizationState {
+                        cull_mode: CullMode::Back,
+                        ..RasterizationState::default()
+                    }),
+                    input_assembly_state: Some(InputAssemblyState {
+                        topology: PrimitiveTopology::TriangleList,
+                        ..Default::default()
+                    }),
+                    vertex_input_state: Some(
+                        VertexInputState::new()
+                            .binding(
+                                0,
+                                VertexInputBindingDescription {
+                                    stride: 12 + 12 + 8,
+                                    input_rate: VertexInputRate::Vertex,
+                                    ..Default::default()
+                                },
+                            )
+                            .attribute(
+                                0,
+                                VertexInputAttributeDescription {
+                                    binding: 0,
+                                    format: Format::R32G32B32_SFLOAT,
+                                    offset: 0,
+                                    ..Default::default()
+                                },
+                            )
+                            .binding(
+                                1,
+                                VertexInputBindingDescription {
+                                    stride: 12 + 12 + 8,
+                                    input_rate: VertexInputRate::Vertex,
+                                    ..Default::default()
+                                },
+                            )
+                            .attribute(
+                                1,
+                                VertexInputAttributeDescription {
+                                    binding: 0,
+                                    format: Format::R32G32B32_SFLOAT,
+                                    offset: 12,
+                                    ..Default::default()
+                                },
+                            )
+                            .binding(
+                                2,
+                                VertexInputBindingDescription {
+                                    stride: 12 + 12 + 8,
+                                    input_rate: VertexInputRate::Vertex,
+                                    ..Default::default()
+                                },
+                            )
+                            .attribute(
+                                2,
+                                VertexInputAttributeDescription {
+                                    binding: 0,
+                                    format: Format::R32G32_SFLOAT,
+                                    offset: 12 + 12,
+                                    ..Default::default()
+                                },
+                            )
+                    ),
+                    viewport_state: Some(ViewportState {
+                        viewports: [Viewport {
+                            offset: [0.0; 2],
+                            extent: [active_framebuffer.image.extent()[0] as f32, active_framebuffer.image.extent()[1] as f32],
+                            depth_range: 0.0..=1.0
+                        }].into_iter().collect(),
+                        scissors: [Scissor {
+                            offset: [0; 2],
+                            extent: [active_framebuffer.image.extent()[0], active_framebuffer.image.extent()[1]],
+                        }].into_iter().collect(),
+                        ..ViewportState::default()
+                    }),
+                    multisample_state: Some(MultisampleState {
+                        rasterization_samples: SampleCount::Sample1,
+                        ..Default::default()
+                    }),
+                    color_blend_state: Some(ColorBlendState::with_attachment_states(
+                        subpass.num_color_attachments(),
+                        ColorBlendAttachmentState::default(),
+                    )),
+                    depth_stencil_state: Some(DepthStencilState {
+                        depth: Some(DepthState::simple()),
+                        ..Default::default()
+                    }),
+                    subpass: Some(PipelineSubpassType::BeginRenderPass(subpass)),
+                    ..GraphicsPipelineCreateInfo::layout(Arc::clone(&self.pipeline_layout))
+                }
+            ).unwrap();
+            log::info!("RENDER-PASS-PIPELINE descriptor_set={}", pipeline.num_used_descriptor_sets());
+            self.pipeline_cache = Some((active_extent, color_attachment_count, window.id(), pipeline.clone()));
+            pipeline
+        };
+        perf.record_pipeline_construction_end();
 
         perf.record_command_record_start();
 
