@@ -314,7 +314,7 @@ impl Renderer {
             ImageCreateInfo {
                 image_type: ImageType::Dim2d,
                 format: Format::R32G32B32A32_SFLOAT,
-                extent: [1024, 1024, 1],
+                extent: [1, 1, 1],
                 usage: ImageUsage::SAMPLED,
                 ..Default::default()
             },
@@ -967,7 +967,6 @@ impl Renderer {
             Self::copy_sized_slice_to_buffer(&self.uniform_per_mesh_buffer, task.instancing_information_bytes().as_slice()).unwrap();
             Self::copy_sized_slice_to_buffer(&self.uniform_light_buffer, task.lights.to_bytes().as_slice()).unwrap();
             Self::copy_sized_slice_to_buffer(&self.uniform_counts_buffer, &[0u32, task.lights.0.len() as u32, 0u32, 0u32]).unwrap();
-            log::info!("WTFFFFF {:?}", task.draw_wireframe);
             Self::copy_sized_slice_to_buffer(&self.uniform_wireframe_buffer, &[if task.draw_wireframe { 1u32 } else { 0u32 }, 0u32, 0u32, 0u32]).unwrap();
             Self::copy_sized_slice_to_buffer(&self.uniform_cam_matrix_buffer, task.cam.get_vp_mat().as_slice()).unwrap();
             perf.record_load_end();
