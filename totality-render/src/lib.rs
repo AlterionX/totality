@@ -749,6 +749,8 @@ impl Renderer {
             start: Instant,
             inflight_load: Option<Instant>,
             loads: Vec<Duration>,
+            swapchain_start: Option<Instant>,
+            swapchain_duration: Option<Duration>,
             framebuffer_acquisition_start: Option<Instant>,
             framebuffer_acquisition_duration: Option<Duration>,
             pipeline_construction_start: Option<Instant>,
@@ -765,6 +767,8 @@ impl Renderer {
                     start: Instant::now(),
                     inflight_load: None,
                     loads: Vec::with_capacity(20),
+                    swapchain_start: None,
+                    swapchain_duration: None,
                     framebuffer_acquisition_start: None,
                     framebuffer_acquisition_duration: None,
                     pipeline_construction_start: None,
@@ -809,6 +813,17 @@ impl Renderer {
                 self.draw_duration = Some(Instant::now() - start);
             }
 
+            fn record_swapchain_start(&mut self) {
+                self.swapchain_start = Some(Instant::now());
+            }
+
+            fn record_swapchain_end(&mut self) {
+                let Some(start) = self.swapchain_start else {
+                    return;
+                };
+                self.swapchain_duration = Some(Instant::now() - start);
+            }
+
             fn record_framebuffer_acquisition_start(&mut self) {
                 self.framebuffer_acquisition_start = Some(Instant::now());
             }
@@ -834,26 +849,55 @@ impl Renderer {
             fn record_end(self) {
                 let over = Instant::now() - self.start;
                 let a = 1000. / over.as_millis() as f64;
-                log::info!("RENDER-PASS-TIMING fps={a} loads={:?} framebuffer_acq={:?} pipeline_submission={:?} submit={:?} draw={:?} total={:?}", self.loads, self.framebuffer_acquisition_duration, self.pipeline_construction_duration, self.command_record_duration, self.draw_duration, over);
+                log::info!(
+                    "RENDER-PASS-TIMING \
+                        fps={a} \
+                        swapchain_duration={:?} \
+                        loads={:?} \
+                        framebuffer_acq={:?} \
+                        pipeline_submission={:?} \
+                        submit={:?} \
+                        draw={:?} \
+                        total={:?}\
+                    ",
+                    self.swapchain_duration,
+                    self.loads,
+                    self.framebuffer_acquisition_duration,
+                    self.pipeline_construction_duration,
+                    self.command_record_duration,
+                    self.draw_duration,
+                    over,
+                );
             }
         }
 
         let mut perf = RenderTimer::begin();
 
 
+        perf.record_swapchain_start();
         let mut e = self.windowed_swapchain.entry(window.id());
         let window_swapchain = match e {
             Entry::Vacant(v) => {
-                v.insert(RendererWindowSwapchain::generate_swapchain(&self.vulkan, &window, &self.ordered_physical_devices[self.selected_physical_device_idx], &self.selected_device, &self.device_memory_alloc).unwrap())
+                self.pipeline_cache = None;
+                v.insert(RendererWindowSwapchain::generate_swapchain(
+                        &self.vulkan,
+                        &window,
+                        &self.ordered_physical_devices[self.selected_physical_device_idx],
+                        &self.selected_device,
+                        &self.device_memory_alloc
+                ).unwrap())
             },
             Entry::Occupied(ref mut o) => {
                 let swapchain_information = o.get_mut();
                 if swapchain_information.is_stale_for_window(&window) {
+                    log::info!("RENDER-PASS-SWAPCHAIN-REGEN");
+                    self.pipeline_cache = None;
                     swapchain_information.regenerated_swapchain(&window, &self.ordered_physical_devices[self.selected_physical_device_idx], &self.selected_device, &self.device_memory_alloc).unwrap();
                 }
                 swapchain_information
             },
         };
+        perf.record_swapchain_end();
 
         log::info!("RENDER-PASS-INIT");
 
@@ -981,9 +1025,7 @@ impl Renderer {
                 times_recreated += 1;
                 window_swapchain.regenerated_swapchain(&window, &self.ordered_physical_devices[self.selected_physical_device_idx], &self.selected_device, &self.device_memory_alloc).unwrap();
                 let n = swapchain::acquire_next_image(Arc::clone(&window_swapchain.swapchain), None).unwrap();
-                preferred = n.0;
-                suboptimal = n.1;
-                acquire_next_image = n.2;
+                (preferred, suboptimal, acquire_next_image) = n;
             }
             (&window_swapchain.images[preferred as usize], preferred, acquire_next_image)
         };
@@ -1140,7 +1182,7 @@ impl Renderer {
                         Some(task.clear_color.clone().into()),
                         Some(ClearValue::Depth(1f32))
                     ],
-                    ..RenderPassBeginInfo::framebuffer(Arc::clone(&window_swapchain.images[0].framebuffer))
+                    ..RenderPassBeginInfo::framebuffer(Arc::clone(&active_framebuffer.framebuffer))
                 },
                 SubpassBeginInfo {
                     contents: SubpassContents::Inline,
@@ -1268,7 +1310,7 @@ pub struct RendererWindowSwapchain {
 impl RendererWindowSwapchain {
     fn is_stale_for_window(&self, window: &Arc<Window>) -> bool {
         let dimensions = window.inner_size();
-        self.cached_dimensions == dimensions
+        self.cached_dimensions != dimensions
     }
 
     fn generate_swapchain(vulkan: &Arc<Instance>, window: &Arc<Window>, pd: &Arc<PhysicalDevice>, device: &Arc<Device>, mem_alloc: &Arc<StandardMemoryAllocator>) -> Result<Self, Validated<VulkanError>> {
