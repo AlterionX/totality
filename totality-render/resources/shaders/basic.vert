@@ -25,12 +25,12 @@ layout (set = 0, binding = 2, std140) uniform Lights {
 layout (set = 0, binding = 3, std140) uniform Materials {
     layout (offset =  0) vec4 materials[1024];
 } material_data;
-layout (set = 0, binding = 4) uniform Camera {
-  layout (offset =  0) mat4 offori;
-} camera;
-layout (set = 0, binding = 5) uniform Wireframe {
+layout (set = 0, binding = 4, std140) uniform Wireframe {
   layout (offset = 0) bool draw_wireframe;
 } wireframe;
+layout (set = 0, binding = 5, std140) uniform Camera {
+  layout (offset =  0) mat4 offori;
+} camera;
 
 layout (location = 0) out gl_PerVertex {
     vec4 gl_Position;
@@ -49,4 +49,10 @@ void main() {
     vert_uv = uv;
     vert_norm = norm;
     vert_pos = vec3(world_pos);
+
+    // passthrough for debug
+    // gl_Position = vec4(position, 1);
+    // vert_uv = uv;
+    // vert_norm = norm;
+    // vert_pos = vec3(world_pos);
 }

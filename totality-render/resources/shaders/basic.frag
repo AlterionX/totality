@@ -23,12 +23,12 @@ layout (set = 0, binding = 2, std140) uniform Lights {
 layout (set = 0, binding = 3, std140) uniform Materials {
     layout (offset =  0) vec4 materials[1024];
 } material_data;
-layout (set = 0, binding = 4) uniform Camera {
-  layout (offset =  0) mat4 offori;
-} camera;
-layout (set = 0, binding = 5) uniform Wireframe {
+layout (set = 0, binding = 4, std140) uniform Wireframe {
   layout (offset = 0) bool draw_wireframe;
 } wireframe;
+layout (set = 0, binding = 5, std140) uniform Camera {
+  layout (offset =  0) mat4 offori;
+} camera;
 
 layout(set = 1, binding = 0) uniform texture2D tex;
 layout(set = 1, binding = 1) uniform sampler samp;
@@ -95,4 +95,6 @@ void main() {
     if (counts.count[1] == 0) {
         color = vec4(diffuse, 1);
     }
+    // Passthrough for debug
+    // color = vec4(1, 0, 0, 0);
 }

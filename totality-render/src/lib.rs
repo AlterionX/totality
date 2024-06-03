@@ -874,7 +874,7 @@ impl Renderer {
                     log::info!("RENDER-TEXTURE mesh={mesh_id} texture={file_path:?}");
                     assert!(file_path.ends_with(".png"), "only pngs are handled, and only ARGB pngs");
                     let f = std::fs::File::open(file_path).expect("provided file exists");
-                    let texture_file = img::load(std::io::BufReader::new(f), ImageFormat::Png).unwrap().into_rgb32f();
+                    let texture_file = img::load(std::io::BufReader::new(f), ImageFormat::Png).unwrap().into_rgba32f();
                     let (texture_width, texture_height) = (texture_file.width(), texture_file.height());
                     Self::copy_sized_slice_to_buffer(&self.staging_texture_buffer.clone(), texture_file.into_raw().as_slice()).unwrap();
                     let texture_image = Image::new(
@@ -967,6 +967,7 @@ impl Renderer {
             Self::copy_sized_slice_to_buffer(&self.uniform_per_mesh_buffer, task.instancing_information_bytes().as_slice()).unwrap();
             Self::copy_sized_slice_to_buffer(&self.uniform_light_buffer, task.lights.to_bytes().as_slice()).unwrap();
             Self::copy_sized_slice_to_buffer(&self.uniform_counts_buffer, &[0u32, task.lights.0.len() as u32, 0u32, 0u32]).unwrap();
+            log::info!("WTFFFFF {:?}", task.draw_wireframe);
             Self::copy_sized_slice_to_buffer(&self.uniform_wireframe_buffer, &[if task.draw_wireframe { 1u32 } else { 0u32 }, 0u32, 0u32, 0u32]).unwrap();
             Self::copy_sized_slice_to_buffer(&self.uniform_cam_matrix_buffer, task.cam.get_vp_mat().as_slice()).unwrap();
             perf.record_load_end();
