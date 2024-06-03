@@ -9,15 +9,34 @@ layout (location = 0) in gl_PerVertex {
     float gl_PointSize;
     float gl_ClipDistance[];
 } gl_in[];
+
 layout (location = 1) in vec2 vert_uv[];
 layout (location = 2) in vec3 vert_norm[];
 layout (location = 3) in vec3 vert_pos[];
 
-layout (push_constant) uniform Constants {
-  layout (offset =  0) mat4 viewport_cam_offori;
-  // This is technically not used, but included since our compiler is dumb and requires this to be fully specified.
-  layout (offset = 64) bool draw_wireframe;
-} push;
+struct Light {
+    vec4 color_and_kind;
+    vec4 offset;
+};
+
+layout (set = 0, binding = 0, std140) uniform Counts {
+    layout(offset = 0) uvec4 count; // instance, light, material, spare
+} counts;
+layout (set = 0, binding = 1, std140) uniform PerMeshData {
+    layout (offset =  0) mat4 offset_orientations[1024];
+} per_mesh_data;
+layout (set = 0, binding = 2, std140) uniform Lights {
+    layout (offset = 0) Light lights[1024];
+} lights_data;
+layout (set = 0, binding = 3, std140) uniform Materials {
+    layout (offset =  0) vec4 materials[1024];
+} material_data;
+layout (set = 0, binding = 4) uniform Camera {
+  layout (offset =  0) mat4 offori;
+} camera;
+layout (set = 0, binding = 5) uniform Wireframe {
+  layout (offset = 0) bool draw_wireframe;
+} wireframe;
 
 layout (location = 1) out vec2 uv;
 layout (location = 2) out vec3 norm;
@@ -69,7 +88,7 @@ void main() {
     EndPrimitive();
 
     // Emit normal line if we're working on a wire frame.
-    // if (push.draw_wireframe) {
+    // if (wireframe[0].draw_wireframe) {
     //     int i;
     //     for (i = 0; i < gl_in.length(); i++) {
     //         vec4 primary = gl_in[(i + 1) % 3].gl_Position - gl_in[i].gl_Position;

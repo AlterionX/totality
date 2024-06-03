@@ -27,11 +27,11 @@ use vulkano::{
     }, device::{
         physical::{
             PhysicalDevice, PhysicalDeviceType
-        }, Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, Queue, QueueCreateInfo, QueueFlags
+        }, Device, DeviceCreateInfo, DeviceExtensions, DeviceFeatures, DeviceOwned, Queue, QueueCreateInfo, QueueFlags
     }, format::{
         ClearValue, Format
     }, image::{
-        sampler::{Sampler, SamplerCreateInfo}, view::ImageView, Image, ImageCreateInfo, ImageLayout, ImageTiling, ImageType, ImageUsage, SampleCount
+        sampler::{Sampler, SamplerCreateInfo}, view::{ImageView, ImageViewCreateInfo}, Image, ImageCreateInfo, ImageFormatInfo, ImageLayout, ImageTiling, ImageType, ImageUsage, SampleCount
     }, instance::{
         Instance,
         InstanceCreateInfo,
@@ -182,6 +182,8 @@ pub struct Renderer {
     uniform_material_buffer: Subbuffer<[u8]>,
     constants_buffer: Subbuffer<[u8]>,
     staging_texture_buffer: Subbuffer<[u8]>,
+    uniform_wireframe_buffer: Subbuffer<[u8]>,
+    uniform_cam_matrix_buffer: Subbuffer<[u8]>,
 
     command_buffer_alloc: Arc<dyn CommandBufferAllocator>,
 
@@ -234,10 +236,18 @@ impl Renderer {
                 .map_err(RendererInitializationError::Physical)?;
             let minimum_device_extensions = DeviceExtensions {
                 khr_swapchain: true,
+                // khr_maintenance4: true,
                 ..DeviceExtensions::empty()
             };
-            let mut devices = iter.filter(|pd| pd.supported_extensions().contains(&minimum_device_extensions)).collect::<Vec<_>>();
-            devices.sort_by_cached_key(|pd| pref.score_physical_device(pd));
+            let mut devices = iter
+                .inspect(|pd| log::info!("DEVICE-REPORT {:?}", pd.properties().device_name.as_str()))
+                .filter(|pd| pd.supported_extensions().contains(&minimum_device_extensions))
+                .collect::<Vec<_>>();
+            devices.sort_by_cached_key(|pd| {
+                let score = pref.score_physical_device(pd);
+                log::info!("DEVICE-SCORE name={:?} score={:?}", pd.properties().device_name.as_str(), score);
+                score
+            });
             devices
         };
 
@@ -254,7 +264,7 @@ impl Renderer {
             for (idx, family) in queue_props.iter().enumerate() {
                 if family.queue_flags.contains(QueueFlags::GRAPHICS) {
                     let idx_u32 = idx.try_into().expect("number of queues is small enough to fit into a u32");
-                    break 'queue_family (0, idx_u32);
+                    break 'queue_family (ordered_physical_devices.len() - 1, idx_u32);
                 }
             }
             return Err(RendererInitializationError::PhysicalDeviceMissingGraphicsCapabilities);
@@ -263,11 +273,12 @@ impl Renderer {
         let (selected_device, selected_device_queues) = {
             let required_extensions = DeviceExtensions {
                 khr_swapchain: true,
-                khr_push_descriptor: true,
+                // khr_maintenance4: true,
                 ..DeviceExtensions::empty()
             };
+            log::info!("DEVICE-SELECTION name={:?}", &ordered_physical_devices[selected_physical_device_idx].properties().device_name.as_str());
             let (device, queues_iter) = Device::new(
-                Arc::clone(&ordered_physical_devices[0]),
+                Arc::clone(&ordered_physical_devices[selected_physical_device_idx]),
                 DeviceCreateInfo {
                     enabled_features: DeviceFeatures {
                         geometry_shader: true,
@@ -294,6 +305,23 @@ impl Renderer {
         let device_memory_alloc = Arc::new(StandardMemoryAllocator::new_default(Arc::clone(&selected_device)));
         // TODO Can we get rid of this?
         let dyn_device_memory_alloc = Arc::clone(&device_memory_alloc) as _;
+
+        // A random image for use later.
+        let empty_texture_image = Image::new(
+            Arc::clone(&device_memory_alloc) as _,
+            ImageCreateInfo {
+                image_type: ImageType::Dim2d,
+                format: Format::R32G32B32A32_SFLOAT,
+                extent: [1024, 1024, 1],
+                usage: ImageUsage::SAMPLED,
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                allocate_preference: vulkano::memory::allocator::MemoryAllocatePreference::AlwaysAllocate,
+                ..Default::default()
+            },
+        ).unwrap();
+        let empty_texture_image_view = ImageView::new_default(empty_texture_image).unwrap();
 
         // Let's just allocate a giant chunk for vertices.
         let vertex_buffer = Buffer::new_unsized(
@@ -462,6 +490,48 @@ impl Renderer {
         )
             .tap_err(|e| log::error!("TOTALITY-RENDERER-INIT-FAILED source=staging_texture_buffer error=failed_creation {e}"))
             .map_err(RendererInitializationError::BufferCreationFailed)?;
+        // And a chunk for constants.
+        let uniform_wireframe_buffer = Buffer::new_unsized(
+            Arc::clone(&dyn_device_memory_alloc),
+            BufferCreateInfo {
+                usage: BufferUsage::UNIFORM_BUFFER | BufferUsage::TRANSFER_DST,
+                // flags: (),
+                // sharing: (),
+                // size: (),
+                // external_memory_handle_types: (),
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                // memory_type_bits: (),
+                // allocate_preference: (),
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            16
+        )
+            .tap_err(|e| log::error!("TOTALITY-RENDERER-INIT-FAILED source=wireframe_buffer error=failed_creation {e}"))
+            .map_err(RendererInitializationError::BufferCreationFailed)?;
+        // And a chunk for the camera matrix.
+        let uniform_cam_matrix_buffer = Buffer::new_unsized(
+            Arc::clone(&dyn_device_memory_alloc),
+            BufferCreateInfo {
+                usage: BufferUsage::UNIFORM_BUFFER | BufferUsage::TRANSFER_DST,
+                // flags: (),
+                // sharing: (),
+                // size: (),
+                // external_memory_handle_types: (),
+                ..Default::default()
+            },
+            AllocationCreateInfo {
+                // memory_type_bits: (),
+                // allocate_preference: (),
+                memory_type_filter: MemoryTypeFilter::PREFER_DEVICE | MemoryTypeFilter::HOST_SEQUENTIAL_WRITE,
+                ..Default::default()
+            },
+            64
+        )
+            .tap_err(|e| log::error!("TOTALITY-RENDERER-INIT-FAILED source=cam_matrix_buffer error=failed_creation {e}"))
+            .map_err(RendererInitializationError::BufferCreationFailed)?;
         // And a last chunk for constants.
         let constants_buffer = Buffer::new_unsized(
             Arc::clone(&dyn_device_memory_alloc),
@@ -519,6 +589,16 @@ impl Renderer {
                     stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
                     ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::UniformBuffer)
                 }),
+                (4, DescriptorSetLayoutBinding {
+                    descriptor_count: 1,
+                    stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+                    ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::UniformBuffer)
+                }),
+                (5, DescriptorSetLayoutBinding {
+                    descriptor_count: 1,
+                    stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT,
+                    ..DescriptorSetLayoutBinding::descriptor_type(DescriptorType::UniformBuffer)
+                }),
             ].into_iter().collect(),
             ..DescriptorSetLayoutCreateInfo::default()
         }).unwrap();
@@ -544,18 +624,13 @@ impl Renderer {
                 Arc::clone(&descriptor_set_layout),
                 Arc::clone(&texture_descriptor_set_layout),
             ],
-            push_constant_ranges: vec![PushConstantRange {
-                stages: ShaderStages::VERTEX | ShaderStages::FRAGMENT | ShaderStages::GEOMETRY,
-                offset: 0,
-                size: 64 + 16,
-            }],
             ..PipelineLayoutCreateInfo::default()
         }).unwrap();
 
         let descriptor_pool = DescriptorPool::new(Arc::clone(&selected_device), DescriptorPoolCreateInfo {
             max_sets: 11, // 1 universal descriptor set, 10 textures allowed.
             pool_sizes: [
-                (DescriptorType::UniformBuffer, 3),
+                (DescriptorType::UniformBuffer, 6),
                 (DescriptorType::SampledImage, 10),
                 (DescriptorType::Sampler, 10),
             ].into_iter().collect(),
@@ -575,54 +650,16 @@ impl Renderer {
             Arc::clone(&descriptor_set_allocator),
             Arc::clone(&descriptor_set_layout),
             [
-                WriteDescriptorSet::buffer(
-                    0,
-                    uniform_counts_buffer.clone().slice(0..16)
-                ),
-                WriteDescriptorSet::buffer_array(
-                    1,
-                    0,
-                    (0..1024).map(|idx| {
-                        let start = idx * 64;
-                        let end = start + 64;
-                        uniform_per_mesh_buffer.clone().slice(start..end)
-                    })
-                ),
-                WriteDescriptorSet::buffer_array(
-                    2,
-                    0,
-                    (0..1024).map(|idx| {
-                        let start = idx * 32;
-                        let end = start + 32;
-                        uniform_light_buffer.clone().slice(start..end)
-                    })
-                ),
-                WriteDescriptorSet::buffer_array(
-                    3,
-                    0,
-                    (0..1024).map(|idx| {
-                        let start = idx * 16;
-                        let end = start + 16;
-                        uniform_material_buffer.clone().slice(start..end)
-                    })
-                ),
+                WriteDescriptorSet::buffer(0, uniform_counts_buffer.clone()),
+                WriteDescriptorSet::buffer(1, uniform_per_mesh_buffer.clone()),
+                WriteDescriptorSet::buffer(2, uniform_light_buffer.clone()),
+                WriteDescriptorSet::buffer(3, uniform_material_buffer.clone()),
+                WriteDescriptorSet::buffer(4, uniform_wireframe_buffer.clone()),
+                WriteDescriptorSet::buffer(5, uniform_cam_matrix_buffer.clone()),
             ],
             [],
         ).unwrap();
-        let empty_texture_image = Image::new(
-            Arc::clone(&device_memory_alloc) as _,
-            ImageCreateInfo {
-                image_type: ImageType::Dim2d,
-                format: Format::R32G32B32_SFLOAT,
-                extent: [1, 1, 1],
-                usage: ImageUsage::SAMPLED,
-                ..Default::default()
-            },
-            AllocationCreateInfo {
-                ..Default::default()
-            },
-        ).unwrap();
-        let empty_texture_image_view = ImageView::new_default(empty_texture_image).unwrap();
+
         let empty_texture_descriptor_set = DescriptorSet::new(
             Arc::clone(&descriptor_set_allocator),
             Arc::clone(&texture_descriptor_set_layout),
@@ -660,6 +697,8 @@ impl Renderer {
             uniform_light_buffer,
             uniform_material_buffer,
             staging_texture_buffer,
+            uniform_wireframe_buffer,
+            uniform_cam_matrix_buffer,
             constants_buffer,
 
             command_buffer_alloc,
@@ -807,10 +846,10 @@ impl Renderer {
                     let texture_image = Image::new(
                         Arc::clone(&self.device_memory_alloc) as _,
                         ImageCreateInfo {
-                            format: Format::R32G32B32_SFLOAT,
-                            view_formats: vec![Format::R32G32B32_SFLOAT],
+                            format: Format::R32G32B32A32_SFLOAT,
+                            view_formats: vec![Format::R32G32B32A32_SFLOAT],
                             extent: [texture_width, texture_height, 1],
-                            usage: ImageUsage::INPUT_ATTACHMENT | ImageUsage::TRANSFER_DST | ImageUsage::SAMPLED,
+                            usage: ImageUsage::INPUT_ATTACHMENT | ImageUsage::COLOR_ATTACHMENT | ImageUsage::SAMPLED | ImageUsage::TRANSFER_DST,
                             tiling: ImageTiling::Optimal,
                             initial_layout: ImageLayout::Undefined,
                             ..Default::default()
@@ -820,7 +859,13 @@ impl Renderer {
                             ..Default::default()
                         },
                     ).unwrap();
-                    let texture_image_view = ImageView::new_default(Arc::clone(&texture_image)).unwrap();
+                    let texture_image_view = ImageView::new(
+                        Arc::clone(&texture_image),
+                        ImageViewCreateInfo {
+                            format: Format::R32G32B32A32_SFLOAT,
+                            ..ImageViewCreateInfo::from_image(&texture_image)
+                        },
+                    ).unwrap();
 
                     // TODO Batch these somehow.
                     let mut image_copy_builder = RecordingCommandBuffer::new(
@@ -888,6 +933,8 @@ impl Renderer {
             Self::copy_sized_slice_to_buffer(&self.uniform_per_mesh_buffer, task.instancing_information_bytes().as_slice()).unwrap();
             Self::copy_sized_slice_to_buffer(&self.uniform_light_buffer, task.lights.to_bytes().as_slice()).unwrap();
             Self::copy_sized_slice_to_buffer(&self.uniform_counts_buffer, &[0u32, task.lights.0.len() as u32, 0u32, 0u32]).unwrap();
+            Self::copy_sized_slice_to_buffer(&self.uniform_wireframe_buffer, &[if task.draw_wireframe { 1u32 } else { 0u32 }, 0u32, 0u32, 0u32]).unwrap();
+            Self::copy_sized_slice_to_buffer(&self.uniform_cam_matrix_buffer, task.cam.get_vp_mat().as_slice()).unwrap();
             perf.record_load_end();
         }
 
@@ -1060,10 +1107,6 @@ impl Renderer {
             .bind_vertex_buffers(1, self.vertex_buffer.clone())
             .unwrap()
             .bind_vertex_buffers(2, self.vertex_buffer.clone())
-            .unwrap()
-            .push_constants(Arc::clone(&self.pipeline_layout), 0, task.cam.get_vp_mat())
-            .unwrap()
-            .push_constants(Arc::clone(&self.pipeline_layout), 64, [if task.draw_wireframe { 1u32 } else { 0u32 }, 0u32, 0u32, 0u32])
             .unwrap()
             .bind_descriptor_sets(
                 PipelineBindPoint::Graphics,
